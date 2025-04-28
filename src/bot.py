@@ -1,82 +1,49 @@
+import base64
 import datetime as dt
-import json
 from logging import getLogger
 
-from openai import OpenAI
-
 from src.config import app_settings
+from src.llm import call_openrouter
 
 logger = getLogger(__name__)
 
-
-def generate_answer(user_input: str) -> str:
+async def process_image_and_generate_answer(image_bytes: bytes) -> str:
     """
-    Calls LLM using system prompt and user's text message.
+    Process image bytes and generate answer using OpenRouter's GPT-4o mini.
     """
-    # return "output"
-    if not user_input:
-        logger.info("User input is empty. SKIPPING")
-        return ""
-
-    start_time = dt.datetime.now()
-    system_prompt = app_settings.SYSTEM_PROMPT
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Please solve this problem step by step: {user_input}"},
-    ]
-
-    logger.info(f"USER PROMPT: '{user_input}'")
-    logger.info("Generating LLM response... ")
-
-    # Primary: Use OpenRouter
-    client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=app_settings.OPENROUTER_API_KEY,
-        http_client=None  # Don't use custom HTTP client
-    )
-
     try:
-        response = client.chat.completions.create(
-            model=app_settings.LANGUAGE_MODEL,
-            messages=messages
-        )
-    except Exception as e:
-        logger.error(f"OpenRouter API call failed: {e}", exc_info=True)
-        logger.info("Falling back to OpenAI API...")
+        # Encode image bytes for API
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
         
-        # Fallback: Use OpenAI
-        try:
-            client = OpenAI(
-                api_key=app_settings.OPENAI_API_KEY,
-                http_client=None  # Don't use custom HTTP client
-            )
-            model = app_settings.LANGUAGE_MODEL.split('/')[-1]
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages
-            )
-        except Exception as e:
-            logger.error(f"OpenAI API call failed: {e}", exc_info=True)
-            return "Sorry, I couldn't generate a solution at the moment. Please try again."
+        start_time = dt.datetime.now()
+        system_prompt = app_settings.IMAGE_SYSTEM_PROMPT.format(RESPONSE_LANGUAGE=app_settings.RESPONSE_LANGUAGE)
 
-    if response.choices and len(response.choices) > 0:
-        output = response.choices[0].message.content
-    else:
-        logger.error(
-            "Request to LLM failed: no answer was generated. "
-            f"Check the input and try again."
-        )
-        logger.info(f"API Response: {json.dumps(response, indent=4)}")
-        return "Sorry, I couldn't generate a solution at the moment. Please try again."
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Please analyze this problem and provide a step-by-step solution:"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    }
+                ]
+            }
+        ]
 
-    usage = response.usage
-    logger.info(
-        f"NUMBER OF TOKENS used per OpenAI API request: {usage.total_tokens}. "
-        f"System prompt: {usage.prompt_tokens}. "
-        f"Generated response: {usage.completion_tokens}."
-    )
-    running_secs = (dt.datetime.now() - start_time).microseconds
-    logger.info(f"Answer generation took {running_secs / 100000:.2f} seconds.")
-
-    return output
+        answer = await call_openrouter(messages)
+        
+        end_time = dt.datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        logger.info(f"Image processing and answer generation took {duration:.2f} seconds.")
+        
+        return answer
+    except Exception as e:
+        logger.error(f"Error processing image: {str(e)}", exc_info=True)
+        return "Sorry, I encountered an error processing the image. Please try again."

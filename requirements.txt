@@ -1,8 +1,10 @@
 line-bot-sdk
 python-dotenv
-Flask
+fastapi
+uvicorn
 openai
 python-multipart
-requests
+aiohttp
 pydantic
 PyYAML
+Pillow

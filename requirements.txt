@@ -1,0 +1,8 @@
+line-bot-sdk
+python-dotenv
+Flask
+openai
+python-multipart
+requests
+pydantic
+PyYAML

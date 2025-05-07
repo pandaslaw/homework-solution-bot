@@ -5,7 +5,8 @@ import inspect
 import asyncio
 from typing import Callable, Dict, List, Type, Union
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -14,6 +15,7 @@ from linebot.v3.messaging import (
     AsyncMessagingApiBlob,
     ReplyMessageRequest,
     TextMessage,
+    ImageMessage,
     Configuration
 )
 from linebot.v3.webhooks import (
@@ -91,6 +93,20 @@ class AsyncWebhookHandler(WebhookHandler):
 logger.info("Initializing LINE bot application...")
 app = FastAPI()
 
+# Enable CORS
+origins = [
+    "http://localhost:3000",
+    "http://localhost:8000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # LINE API setup
 configuration = Configuration(access_token=app_settings.LINE_CHANNEL_ACCESS_TOKEN)
 line_bot_api = AsyncMessagingApi(AsyncApiClient(configuration))
@@ -108,7 +124,7 @@ async def callback(request: Request):
     
     try:
         await handler.handle(body_text, signature)
-        return 'OK'
+        return Response(content="OK", media_type="text/plain")
     except InvalidSignatureError:
         logger.error("Invalid signature in LINE webhook callback")
         raise HTTPException(status_code=400, detail="Invalid signature")
@@ -124,18 +140,44 @@ async def handle_text_message(event):
     logger.info(f"Received text message from user {user_id}: {user_message}")
 
     try:
-        solution = await generate_answer(user_message)
-        logger.info(f"Generated solution for user {user_id}")
-        logger.debug(f"Solution content length: {len(solution)}")
+        response = await generate_answer(user_message)
+        logger.info(f"Generated response for user {user_id}")
         
-        # Send the solution back to the user
+        # Handle different response types
+        if isinstance(response, str):
+            # Simple text response
+            messages = [TextMessage(text=response)]
+        else:
+            # Mixed text and image response
+            messages = []
+            for msg in response:
+                if msg["type"] == "text":
+                    messages.append(TextMessage(text=msg["text"]))
+                elif msg["type"] == "image":
+                    # Verify URLs are HTTPS
+                    original_url = msg["originalContentUrl"]
+                    preview_url = msg["previewImageUrl"]
+                    if not original_url.startswith("https://") or not preview_url.startswith("https://"):
+                        logger.error(f"Invalid image URL (not HTTPS): {original_url}")
+                        messages.append(TextMessage(text="[Image Error: Could not display equation]"))
+                        continue
+                        
+                    messages.append(ImageMessage(
+                        original_content_url=original_url,
+                        preview_image_url=preview_url
+                    ))
+        
+        if not messages:
+            messages = [TextMessage(text="Sorry, I couldn't process the response properly.")]
+        
+        # Send the message(s)
         await line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=solution)]
+                messages=messages
             )
         )
-        logger.info(f"Successfully sent solution to user {user_id}")
+        logger.info(f"Successfully sent response to user {user_id}")
     except Exception as e:
         logger.error(f"Error processing message from user {user_id}: {str(e)}", exc_info=True)
         # Try to send error message to user

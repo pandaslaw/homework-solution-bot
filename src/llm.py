@@ -1,7 +1,11 @@
 from logging import getLogger
 import asyncio
 import datetime as dt
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union, Tuple
+import re
+import base64
+from io import BytesIO
+import aiohttp
 
 from openai import AsyncOpenAI
 
@@ -41,8 +45,165 @@ async def call_openrouter(messages: List[Dict[str, Any]], max_retries: int = 2) 
     return "Sorry, I encountered an error. Please try again later."
 
 
+def format_math_expression(latex: str) -> str:
+    """Format a LaTeX expression into a more readable text format"""
+    # Clean up the LaTeX code
+    latex = latex.strip()
+    if latex.startswith('\\[') and latex.endswith('\\]'):
+        latex = latex[2:-2].strip()
+    elif latex.startswith('\\(') and latex.endswith('\\)'):
+        latex = latex[2:-2].strip()
+    
+    # First replace special symbols (before handling braces)
+    symbol_replacements = {
+        '\\times': '×',
+        '\\div': '÷',
+        '\\le': '≤',
+        '\\ge': '≥',
+        '\\neq': '≠',
+        '\\approx': '≈',
+        '\\pm': '±',
+        '\\cdot': '·',
+        '_': 'ₓ',
+        '^': 'ⁿ',
+    }
+    
+    for old, new in symbol_replacements.items():
+        latex = latex.replace(old, new)
+    
+    # Handle fractions and other brace-based expressions
+    def process_braces(expr):
+        result = []
+        i = 0
+        brace_level = 0
+        current_cmd = ""
+        
+        while i < len(expr):
+            char = expr[i]
+            
+            if char == '\\' and i + 1 < len(expr):
+                # Start of a LaTeX command
+                cmd_end = i + 1
+                while cmd_end < len(expr) and expr[cmd_end].isalpha():
+                    cmd_end += 1
+                current_cmd = expr[i:cmd_end]
+                i = cmd_end
+                continue
+                
+            elif char == '{':
+                if current_cmd == '\\frac':
+                    # Start fraction
+                    num_start = i + 1
+                    brace_level = 1
+                    i += 1
+                    while i < len(expr) and brace_level > 0:
+                        if expr[i] == '{': brace_level += 1
+                        elif expr[i] == '}': brace_level -= 1
+                        i += 1
+                    num = expr[num_start:i-1]
+                    
+                    # Get denominator
+                    if i < len(expr) and expr[i] == '{':
+                        den_start = i + 1
+                        brace_level = 1
+                        i += 1
+                        while i < len(expr) and brace_level > 0:
+                            if expr[i] == '{': brace_level += 1
+                            elif expr[i] == '}': brace_level -= 1
+                            i += 1
+                        den = expr[den_start:i-1]
+                        result.append(f"({process_braces(num)})/({process_braces(den)})")
+                    current_cmd = ""
+                    continue
+                    
+                elif current_cmd == '\\sqrt':
+                    # Handle square root
+                    sqrt_start = i + 1
+                    brace_level = 1
+                    i += 1
+                    while i < len(expr) and brace_level > 0:
+                        if expr[i] == '{': brace_level += 1
+                        elif expr[i] == '}': brace_level -= 1
+                        i += 1
+                    sqrt_content = expr[sqrt_start:i-1]
+                    result.append(f"√({process_braces(sqrt_content)})")
+                    current_cmd = ""
+                    continue
+                    
+                else:
+                    # Skip other braced content
+                    brace_level = 1
+                    i += 1
+                    while i < len(expr) and brace_level > 0:
+                        if expr[i] == '{': brace_level += 1
+                        elif expr[i] == '}': brace_level -= 1
+                        i += 1
+                    continue
+            
+            else:
+                result.append(char)
+                i += 1
+                current_cmd = ""
+        
+        return ''.join(result)
+    
+    return process_braces(latex)
+
+
+def extract_latex_blocks(text: str) -> Tuple[str, List[str]]:
+    """Extract LaTeX blocks from text and replace with placeholders"""
+    latex_blocks = []
+    
+    # Find all LaTeX blocks (both inline and display)
+    pattern = r'\\[\(\[].*?\\[\)\]]'
+    matches = list(re.finditer(pattern, text, re.DOTALL))
+    
+    # Replace LaTeX blocks with placeholders in reverse order
+    # to avoid messing up the positions
+    for i, match in enumerate(reversed(matches)):
+        latex = match.group(0)
+        placeholder = f"__LATEX_{len(matches)-i-1}__"
+        latex_blocks.insert(0, latex)
+        start, end = match.span()
+        text = text[:start] + placeholder + text[end:]
+    
+    return text, latex_blocks
+
+
+def format_line_message(text: str) -> str:
+    """Format text for LINE message, handling headers and line breaks"""
+    lines = text.split('\n')
+    formatted_lines = []
+    
+    for line in lines:
+        # Skip empty lines
+        if not line.strip():
+            continue
+            
+        # Remove extra spaces at the start of lines
+        line = line.strip()
+        
+        # Keep empty lines between paragraphs
+        if not formatted_lines or not formatted_lines[-1]:
+            formatted_lines.append(line)
+        else:
+            # Add appropriate spacing between lines
+            prev_line = formatted_lines[-1]
+            
+            # If this line is a header (starts with "Step" or "Summary")
+            if line.startswith(('Step', 'Summary')):
+                # Add a blank line before headers if there isn't one
+                if prev_line:
+                    formatted_lines.append('')
+                formatted_lines.append(line)
+            else:
+                formatted_lines.append(line)
+    
+    return '\n'.join(formatted_lines)
+
+
 async def generate_answer(user_input: str) -> str:
-    """Generate an answer using OpenRouter"""
+    """Generate an answer using OpenRouter and format math expressions"""
     if not user_input:
         logger.info("User input is empty. SKIPPING")
         return ""
@@ -59,9 +220,22 @@ async def generate_answer(user_input: str) -> str:
     logger.info("Generating LLM response... ")
 
     answer = await call_openrouter(messages)
+    if not answer:
+        return "Sorry, I encountered an error. Please try again later."
+    
+    # Extract LaTeX blocks and format them
+    text, latex_blocks = extract_latex_blocks(answer)
+    
+    # Replace each LaTeX block with its formatted version
+    for i, latex in enumerate(latex_blocks):
+        formatted_math = format_math_expression(latex)
+        text = text.replace(f"__LATEX_{i}__", f"`{formatted_math}`")
+    
+    # Format the final text
+    formatted_text = format_line_message(text)
     
     end_time = dt.datetime.now()
     duration = (end_time - start_time).total_seconds()
     logger.info(f"Answer generation took {duration:.2f} seconds.")
-
-    return answer
+    
+    return formatted_text

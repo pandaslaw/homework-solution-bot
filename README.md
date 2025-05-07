@@ -25,8 +25,8 @@ python main.py
 ```
 
 5. Set up webhook URL in LINE Developer Console:
-   - Use ngrok or similar tool to create a public URL
-   - Set webhook URL to: `https://your-domain/callback`
+   - Use ngrok or similar tool to create a public URL, in terminal run command `ngrok http 5000`
+   - At https://developers.line.biz/console/channel/2007297944/messaging-api set webhook URL to: `https://your-domain/callback`. Make sure URL ends with `/callback` 
 
 ## Usage
 

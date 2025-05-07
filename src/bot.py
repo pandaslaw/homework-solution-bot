@@ -3,7 +3,7 @@ import datetime as dt
 from logging import getLogger
 
 from src.config import app_settings
-from src.llm import call_openrouter
+from src.llm import call_openrouter, format_line_message, format_solution
 
 logger = getLogger(__name__)
 
@@ -39,11 +39,13 @@ async def process_image_and_generate_answer(image_bytes: bytes) -> str:
 
         answer = await call_openrouter(messages)
         
-        end_time = dt.datetime.now()
-        duration = (end_time - start_time).total_seconds()
-        logger.info(f"Image processing and answer generation took {duration:.2f} seconds.")
+        # Format the response
+        formatted_answer = format_solution(
+            "Here's the solution based on the text from your image:\n\n" + answer
+        )
         
-        return answer
+        return formatted_answer
+        
     except Exception as e:
         logger.error(f"Error processing image: {str(e)}", exc_info=True)
-        return "Sorry, I encountered an error processing the image. Please try again."
+        return "Sorry, I encountered an error while processing your image. Please try again or send the problem as text."

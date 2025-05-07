@@ -174,32 +174,66 @@ def format_line_message(text: str) -> str:
     """Format text for LINE message, handling headers and line breaks"""
     lines = text.split('\n')
     formatted_lines = []
-    
-    for line in lines:
-        # Skip empty lines
-        if not line.strip():
-            continue
-            
-        # Remove extra spaces at the start of lines
-        line = line.strip()
-        
-        # Keep empty lines between paragraphs
-        if not formatted_lines or not formatted_lines[-1]:
-            formatted_lines.append(line)
-        else:
-            # Add appropriate spacing between lines
-            prev_line = formatted_lines[-1]
-            
-            # If this line is a header (starts with "Step" or "Summary")
-            if line.startswith(('Step', 'Summary')):
-                # Add a blank line before headers if there isn't one
-                if prev_line:
+
+    for i, line in enumerate(lines):
+        # Convert markdown headers to plain text
+        if line.strip().startswith('#'):
+            # Remove # symbols and get the header text
+            header_text = line.lstrip('#').strip()
+            if header_text.startswith(('Step', 'Summary')):
+                # Add blank line before header if there isn't one
+                if formatted_lines and formatted_lines[-1].strip():
                     formatted_lines.append('')
-                formatted_lines.append(line)
-            else:
-                formatted_lines.append(line)
+                formatted_lines.append(header_text)
+                continue
+
+        # Handle empty lines
+        if not line.strip():
+            # Keep empty lines between paragraphs, but avoid duplicates
+            if formatted_lines and formatted_lines[-1].strip():
+                formatted_lines.append('')
+            continue
+
+        # Clean up markdown formatting, but preserve code backticks
+        cleaned_line = line
+        if '`' not in line:
+            cleaned_line = line.replace('*', '').replace('_', '')
+
+        # Add the line
+        formatted_lines.append(cleaned_line.strip())
+
+        # Add empty line after certain blocks
+        if i + 1 < len(lines):
+            next_line = lines[i + 1].strip()
+            # Add empty line before headers
+            if next_line.startswith(('#', 'Step', 'Summary')):
+                formatted_lines.append('')
+            # Add empty line after equations (lines with =)
+            elif '=' in cleaned_line and not next_line.startswith(('This', 'Since', 'Therefore')):
+                formatted_lines.append('')
+
+    # Clean up trailing empty lines
+    while formatted_lines and not formatted_lines[-1].strip():
+        formatted_lines.pop()
     
     return '\n'.join(formatted_lines)
+
+
+def format_solution(answer: str) -> str:
+    if not answer:
+        return "Sorry, I encountered an error. Please try again later."
+
+    # Extract LaTeX blocks and format them
+    text, latex_blocks = extract_latex_blocks(answer)
+
+    # Replace each LaTeX block with its formatted version
+    for i, latex in enumerate(latex_blocks):
+        formatted_math = format_math_expression(latex)
+        text = text.replace(f"__LATEX_{i}__", f"`{formatted_math}`")
+
+    # Format the final text
+    formatted_text = format_line_message(text)
+    return formatted_text
 
 
 async def generate_answer(user_input: str) -> str:
@@ -220,19 +254,9 @@ async def generate_answer(user_input: str) -> str:
     logger.info("Generating LLM response... ")
 
     answer = await call_openrouter(messages)
-    if not answer:
-        return "Sorry, I encountered an error. Please try again later."
-    
-    # Extract LaTeX blocks and format them
-    text, latex_blocks = extract_latex_blocks(answer)
-    
-    # Replace each LaTeX block with its formatted version
-    for i, latex in enumerate(latex_blocks):
-        formatted_math = format_math_expression(latex)
-        text = text.replace(f"__LATEX_{i}__", f"`{formatted_math}`")
     
     # Format the final text
-    formatted_text = format_line_message(text)
+    formatted_text = format_solution(answer)
     
     end_time = dt.datetime.now()
     duration = (end_time - start_time).total_seconds()

@@ -40,9 +40,7 @@ async def process_image_and_generate_answer(image_bytes: bytes) -> str:
         answer = await call_openrouter(messages)
         
         # Format the response
-        formatted_answer = format_solution(
-            "Here's the solution based on the text from your image:\n\n" + answer
-        )
+        formatted_answer = format_solution(answer)
         
         return formatted_answer
         

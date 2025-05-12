@@ -1,6 +1,5 @@
 import uvicorn
 from src.config import app_settings
-from src.main import app
 
 if __name__ == "__main__":
     port = int(app_settings.PORT if hasattr(app_settings, 'PORT') else 5000)
